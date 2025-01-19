@@ -1,10 +1,9 @@
 <?php
 
-use Illuminate\Http\Request;
- use Illuminate\Support\Facades\Route;
+   use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\SystemController;
 
-// User Authentication and General Operations
 Route::prefix('system')->group(function () {
     // User Routes
     Route::post('/register', [SystemController::class, 'register']);
@@ -17,6 +16,7 @@ Route::prefix('system')->group(function () {
         Route::post('/book-parking', [SystemController::class, 'bookParking']);
         Route::post('/make-payment', [SystemController::class, 'makePayment']);
         Route::get('/my-activities', [SystemController::class, 'getActivities']);
+        Route::post('/issue-certificate', [SystemController::class, 'issueCertificate']);
 
         // Employee-Specific Operations
         Route::middleware('can:manage-slots')->group(function () {
