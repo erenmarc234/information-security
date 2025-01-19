@@ -3,7 +3,7 @@
 namespace App\Providers;
 
 use Illuminate\Foundation\Support\Providers\AuthServiceProvider as ServiceProvider;
-use Illuminate\Support\Facades\Gate;
+ use Illuminate\Support\Facades\Gate;
 
 class AuthServiceProvider extends ServiceProvider
 {
@@ -19,13 +19,14 @@ class AuthServiceProvider extends ServiceProvider
     /**
      * Register any authentication / authorization services.
      */
-    public function boot(): void
+
+    public function boot()
     {
         $this->registerPolicies();
-
-        // Define the manage-slots gate
+    
+        // تعريف الصلاحية
         Gate::define('manage-slots', function ($user) {
-            return $user->user_type === 'employee';
+            return $user->user_type === 'employee'; // فقط الموظفون يمكنهم إضافة المواقف
         });
     }
 }

@@ -15,37 +15,40 @@ use Validator;
 
 class SystemController extends Controller
 {
-    /**
-     * Encrypt data using a session key.
-     */
+
     private function encryptData($data, $key)
-    {
-        return openssl_encrypt(
-            json_encode($data),
+{
+    $iv = random_bytes(16);  
+    $encrypted = openssl_encrypt(
+        json_encode($data),
+        'AES-256-CBC',
+        $key,
+        0,
+        $iv
+    );
+
+    return base64_encode($iv . $encrypted);  
+}
+
+private function decryptData($encryptedData, $key)
+{
+    $data = base64_decode($encryptedData);
+    $iv = substr($data, 0, 16); // استخراج IV
+    $ciphertext = substr($data, 16); // استخراج النص المشفر
+
+    return json_decode(
+        openssl_decrypt(
+            $ciphertext,
             'AES-256-CBC',
             $key,
             0,
-            substr($key, 0, 16)
-        );
-    }
+            $iv
+        ),
+        true
+    );
+}
 
-    /**
-     * Decrypt data using a session key.
-     */
-    private function decryptData($encryptedData, $key)
-    {
-        return json_decode(
-            openssl_decrypt(
-                $encryptedData,
-                'AES-256-CBC',
-                $key,
-                0,
-                substr($key, 0, 16)
-            ),
-            true
-        );
-    }
-
+   
     /**
      * Generate a digital signature for data.
      */
@@ -62,28 +65,27 @@ class SystemController extends Controller
         return hash_hmac('sha256', json_encode($data), $key) === $signature;
     }
 
-    /**
-     * Generate hybrid encryption keys.
-     */
+  
     private function generateKeys()
     {
-        // إعدادات OpenSSL
         $config = [
             'private_key_bits' => 2048,
             'private_key_type' => OPENSSL_KEYTYPE_RSA,
         ];
     
-        // محاولة إنشاء المفتاح الخاص
         $privateKey = openssl_pkey_new($config);
     
         if (!$privateKey) {
             throw new \Exception('Failed to generate private key: ' . openssl_error_string());
         }
     
-        $privateKeyString = '';
         openssl_pkey_export($privateKey, $privateKeyString);
     
         $keyDetails = openssl_pkey_get_details($privateKey);
+    
+        if (!isset($keyDetails['key'])) {
+            throw new \Exception('Failed to retrieve public key: ' . openssl_error_string());
+        }
     
         return [
             'private_key' => $privateKeyString,
@@ -91,107 +93,90 @@ class SystemController extends Controller
         ];
     }
     
-    
-
     /**
      * Encrypt session key with public key.
      */
-    private function encryptSessionKey($sessionKey, $publicKey)
-    {
-        openssl_public_encrypt($sessionKey, $encryptedKey, $publicKey);
-        return base64_encode($encryptedKey);
-    }
 
-    /**
-     * Decrypt session key with private key.
-     */
-    private function decryptSessionKey($encryptedKey, $privateKey)
-    {
-        openssl_private_decrypt(base64_decode($encryptedKey), $decryptedKey, $privateKey);
-        return $decryptedKey;
-    }
+     private function encryptSessionKey($sessionKey, $publicKey)
+     {
+         // التحقق من أن المكتبة OpenSSL مفعلة
+         if (!extension_loaded('openssl')) {
+             throw new \Exception('OpenSSL extension is not enabled.');
+         }
+     
+         // التحقق من أن المفتاح العام ليس فارغًا
+         if (!$publicKey) {
+             throw new \Exception('Public key is missing.');
+         }
+     
+         // التحقق من التنسيق وإضافة الرؤوس إذا كانت مفقودة
+         if (strpos($publicKey, '-----BEGIN PUBLIC KEY-----') === false) {
+             $publicKey = "-----BEGIN PUBLIC KEY-----\n" . chunk_split($publicKey, 64, "\n") . "-----END PUBLIC KEY-----";
+         }
+     
+         // التحقق من صحة المفتاح العام
+         $resource = openssl_pkey_get_public($publicKey);
+         if (!$resource) {
+             throw new \Exception('Invalid public key format: ' . openssl_error_string());
+         }
+     
+         // تشفير مفتاح الجلسة باستخدام المفتاح العام
+         if (!openssl_public_encrypt($sessionKey, $encryptedKey, $resource)) {
+             throw new \Exception('Failed to encrypt session key: ' . openssl_error_string());
+         }
+     
+         return base64_encode($encryptedKey);
+     }
+     
+     private function decryptSessionKey($encryptedKey, $privateKey)
+     {
+         $resource = openssl_pkey_get_private($privateKey);
+     
+         if (!$resource) {
+             throw new \Exception('Invalid private key provided.');
+         }
+     
+         if (!openssl_private_decrypt(base64_decode($encryptedKey), $decryptedKey, $resource)) {
+             throw new \Exception('Failed to decrypt session key: ' . openssl_error_string());
+         }
+     
+         return $decryptedKey;
+     }
+     
 
-    /**
-     * Issue a digital certificate.
-     */
-    /*public function issueCertificate(Request $request)
+
+ 
+   
+    public function issueCertificate(Request $request)
     {
+
         $validator = Validator::make($request->all(), [
             'user_id' => 'required|exists:users,id',
         ]);
-
+    
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
-
+    
         $user = User::find($request->user_id);
         $keys = $this->generateKeys();
-
-        $certificate = Certificate::create([
-            'user_id' => $user->id,
-            'public_key' => $keys['public_key'],
-            'private_key' => $keys['private_key'],
-            'issued_at' => now(),
-        ]);
-
-        return response()->json(['message' => 'Certificate issued successfully.', 'certificate' => $certificate], 201);
-    }*/
-    public function issueCertificate(Request $request)
-    {
-         $validator = Validator::make($request->all(), [
-            'user_id' => 'required|exists:users,id',
-        ]);
     
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+        try {
+            $certificate = Certificate::create([
+                'user_id' => $user->id,
+                'public_key' => $keys['public_key'],
+                'private_key' => $keys['private_key'], // حذف المفتاح الخاص إذا كان حساسًا.
+                'issued_at' => now(),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Failed to issue certificate: ' . $e->getMessage()], 500);
         }
-    
-         $user = User::find($request->user_id);
-    
-         $certificate = Certificate::create([
-            'user_id' => $user->id,
-            'issued_at' => now(),
-            'certificate_data' => 'Default certificate data', // أضف هذا السطر
-
-        ]);
     
         return response()->json(['message' => 'Certificate issued successfully.', 'certificate' => $certificate], 201);
     }
     
     /**
-     * Validate a digital certificate.
-     */
-    private function validateCertificate($certificateId)
-    {
-        $certificate = Certificate::find($certificateId);
-        if (!$certificate) {
-            return false;
-        }
-
-        // Example: Check if the certificate is expired (valid for 1 year)
-        $issuedAt = strtotime($certificate->issued_at);
-        $validUntil = strtotime('+1 year', $issuedAt);
-        return time() <= $validUntil;
-    }
-
-    /**
-     * Protect against XSS by sanitizing input.
-     */
-    private function sanitizeInput($input)
-    {
-        return htmlspecialchars($input, ENT_QUOTES, 'UTF-8');
-    }
-
-    /**
-     * Protect against SQL Injection by using parameterized queries.
-     */
-    private function secureQuery($query, $bindings = [])
-    {
-        return \DB::select($query, $bindings);
-    }
-
-    /**
-     * Register a new user and sanitize inputs.
+     * Register a new user and assign roles.
      */
     public function register(Request $request)
     {
@@ -208,11 +193,24 @@ class SystemController extends Controller
         }
 
         $user = User::create([
-            'full_name' => $this->sanitizeInput($request->full_name),
-            'user_type' => $this->sanitizeInput($request->user_type),
-            'phone_number' => $this->sanitizeInput($request->phone_number),
-            'car_plate' => $this->sanitizeInput($request->car_plate),
+            'full_name' => $request->full_name,
+            'user_type' => $request->user_type,
+            'phone_number' => $request->phone_number,
+            'car_plate' => $request->car_plate,
             'password' => Hash::make($request->password),
+        ]);
+
+        $keys = $this->generateKeys();
+
+        Certificate::create([
+            'user_id' => $user->id,
+            'public_key' => $keys['public_key'],
+            'private_key' => $keys['private_key'],
+            'issued_at' => now(),
+            'certificate_data' => json_encode([
+        'public_key' => $keys['public_key'],
+        'private_key' => $keys['private_key']
+    ])
         ]);
 
         $token = $user->createToken('SystemAccessToken')->plainTextToken;
@@ -220,12 +218,12 @@ class SystemController extends Controller
         return response()->json([
             'message' => 'User registered successfully.',
             'user' => $user,
-            'token' => $token
+            'token' => $token,
         ], 201);
     }
 
     /**
-     * Sanitize inputs in login function.
+     * Handle login and access control.
      */
     public function login(Request $request)
     {
@@ -238,35 +236,39 @@ class SystemController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $phoneNumber = $this->sanitizeInput($request->phone_number);
-        $user = User::where('phone_number', $phoneNumber)->first();
+        $user = User::where('phone_number', $request->phone_number)->first();
 
         if (!$user || !Hash::check($request->password, $user->password)) {
             return response()->json(['message' => 'Invalid credentials.'], 401);
+        }
+
+        $certificate = Certificate::where('user_id', $user->id)->first();
+        if (!$certificate) {
+            return response()->json(['message' => 'Certificate not found.'], 403);
         }
 
         $token = $user->createToken('SystemAccessToken')->plainTextToken;
 
         return response()->json([
             'message' => 'Login successful.',
-            'user' => $user,
-            'token' => $token
+            'token' => $token,
         ], 200);
     }
 
     /**
-     * Get available parking slots.
+     * Allow visitors to view parking slots.
      */
-    public function getAvailableSlots()
+    public function viewParkingSlots()
     {
-        $availableSlots = ParkingSlot::where('status', 'available')->get();
-        return response()->json(['available_slots' => $availableSlots], 200);
+        $slots = ParkingSlot::where('status', 'available')->get();
+
+        return response()->json(['available_slots' => $slots]);
     }
 
     /**
-     * Book a parking slot with encryption and digital signature.
+     * Allow visitors to book a parking slot.
      */
-    public function bookParking(Request $request)
+    public function bookParkingSlot(Request $request)
     {
         $validator = Validator::make($request->all(), [
             'slot_id' => 'required|exists:parking_slots,id',
@@ -284,15 +286,9 @@ class SystemController extends Controller
             return response()->json(['message' => 'Parking slot is already occupied.'], 400);
         }
 
-        // Validate user certificate
-        $user = $request->user();
-        if (!$this->validateCertificate($user->id)) {
-            return response()->json(['message' => 'Invalid or expired certificate.'], 403);
-        }
-
         $slot->update([
             'status' => 'occupied',
-            'booked_by' => $user->id,
+            'booked_by' => auth()->id(),
             'booking_time' => $request->start_time,
             'booking_duration' => $request->duration,
         ]);
@@ -300,82 +296,164 @@ class SystemController extends Controller
         $sessionKey = Str::random(32);
         $signature = $this->generateSignature($slot->toArray(), $sessionKey);
 
-        $activity = Activity::create([
+        Activity::create([
             'activity_type' => 'booking',
-            'user_id' => $user->id,
+            'user_id' => auth()->id(),
             'activity_data' => json_encode($slot->toArray()),
             'digital_signature' => $signature,
         ]);
 
-        return response()->json(['message' => 'Parking slot booked successfully.', 'activity' => $activity], 200);
+        return response()->json(['message' => 'Parking slot booked successfully.']);
     }
 
     /**
-     * Make a payment with encryption and digital signature.
+     * Allow visitors to view their booking history.
+     */
+    public function viewBookingHistory()
+    {
+        $bookings = ParkingSlot::where('booked_by', auth()->id())->get();
+
+        return response()->json(['booking_history' => $bookings]);
+    }
+
+    /**
+     * Allow visitors to make payments with hybrid encryption.
      */
     public function makePayment(Request $request)
     {
         $validator = Validator::make($request->all(), [
             'amount' => 'required|numeric|min:0.01',
         ]);
-
+    
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
-
-        $user = $request->user();
-
-        // Validate user certificate
-        if (!$this->validateCertificate($user->id)) {
-            return response()->json(['message' => 'Invalid or expired certificate.'], 403);
+    
+        $user = auth()->user();
+        $sessionKey = Str::random(32);
+    
+        // استرجاع الشهادة
+        $certificate = Certificate::where('user_id', $user->id)->first();
+    
+        if (!$certificate) {
+            return response()->json(['error' => 'Certificate not found for the user.'], 404);
         }
-
+    
+        // استخراج المفتاح العام من certificate_data
+        $certificateData = json_decode($certificate->certificate_data, true);
+    
+        if (!isset($certificateData['public_key'])) {
+            return response()->json(['error' => 'Public key is missing in certificate data.'], 400);
+        }
+    
+        $publicKey = $certificateData['public_key'];
+    
+        // تشفير مفتاح الجلسة
+        $encryptedSessionKey = $this->encryptSessionKey($sessionKey, $publicKey);
+    
         $payment = Payment::create([
             'user_id' => $user->id,
             'amount' => $request->amount,
             'payment_status' => 'successful',
             'payment_time' => now(),
         ]);
-
-        $sessionKey = Str::random(32);
+    
         $signature = $this->generateSignature($payment->toArray(), $sessionKey);
-
-        $activity = Activity::create([
+    
+        Activity::create([
             'activity_type' => 'payment',
             'user_id' => $user->id,
             'activity_data' => json_encode($payment->toArray()),
             'digital_signature' => $signature,
         ]);
-
-        return response()->json(['message' => 'Payment processed successfully.', 'activity' => $activity], 201);
+    
+        return response()->json([
+            'message' => 'Payment processed successfully.',
+            'encrypted_session_key' => $encryptedSessionKey,
+        ]);
     }
-
+    
     /**
-     * Verify an activity's digital signature.
+     * Allow employees to manage parking slots.
      */
-    public function verifyActivitySignature(Request $request)
+    public function manageParkingSlots(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'activity_id' => 'required|exists:activities,id',
-            'session_key' => 'required|string',
+            'slot_number' => 'required|string|unique:parking_slots,slot_number',
+            'status' => 'required|in:available,occupied',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $activity = Activity::find($request->activity_id);
-        $isValid = $this->verifySignature(json_decode($activity->activity_data, true), $activity->digital_signature, $request->session_key);
+        $slot = ParkingSlot::create([
+            'slot_number' => $request->slot_number,
+            'status' => $request->status,
+        ]);
 
-        return response()->json(['message' => $isValid ? 'Signature is valid.' : 'Invalid signature.'], $isValid ? 200 : 400);
+        return response()->json(['message' => 'Parking slot added successfully.', 'slot' => $slot]);
     }
 
     /**
-     * Get user activities.
+     * Allow employees to update parking slots.
      */
-    public function getActivities(Request $request)
+    public function updateParkingSlot(Request $request, $id)
     {
-        $activities = Activity::where('user_id', $request->user()->id)->get();
-        return response()->json(['activities' => $activities], 200);
+        $validator = Validator::make($request->all(), [
+            'status' => 'required|in:available,occupied',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $slot = ParkingSlot::find($id);
+
+        if (!$slot) {
+            return response()->json(['message' => 'Parking slot not found.'], 404);
+        }
+
+        $slot->update([
+            'status' => $request->status,
+        ]);
+
+        return response()->json(['message' => 'Parking slot updated successfully.']);
+    }
+
+    /**
+     * Allow employees to delete parking slots.
+     */
+    public function deleteParkingSlot($id)
+    {
+        $slot = ParkingSlot::find($id);
+
+        if (!$slot) {
+            return response()->json(['message' => 'Parking slot not found.'], 404);
+        }
+
+        $slot->delete();
+
+        return response()->json(['message' => 'Parking slot deleted successfully.']);
+    }
+
+    /**
+     * Allow employees to view all bookings.
+     */
+    public function viewAllBookings()
+    {
+        $bookings = ParkingSlot::where('status', 'occupied')->get();
+
+        return response()->json(['all_bookings' => $bookings]);
+    }
+
+    /**
+     * Allow employees to view parking slot statuses.
+     */
+    public function viewSlotStatuses()
+    {
+        $slots = ParkingSlot::all();
+
+        return response()->json(['slots' => $slots]);
     }
 }
